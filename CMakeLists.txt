@@ -11,7 +11,7 @@ project(mosquitto)
 cmake_minimum_required(VERSION 2.8)
 # Only for version 3 and up. cmake_policy(SET CMP0042 NEW)
 
-set (VERSION 1.6.8)
+set (VERSION 1.6.9)
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/")
 
@@ -100,9 +100,17 @@ endif (WITH_DLT)
 # Include projects
 # ========================================
 
+option(WITH_CLIENTS "Build clients?" ON)
+option(WITH_BROKER "Build broker?" ON)
+
 add_subdirectory(lib)
-add_subdirectory(client)
+if (WITH_CLIENTS)
+	add_subdirectory(client)
+endif (WITH_CLIENTS)
+if (WITH_BROKER)
 add_subdirectory(src)
+endif (WITH_BROKER)
+
 if (DOCUMENTATION)
 	add_subdirectory(man)
 endif (DOCUMENTATION)

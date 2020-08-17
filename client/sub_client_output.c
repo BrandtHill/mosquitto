@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2009-2019 Roger Light <roger@atchoo.org>
+Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License v1.0
@@ -196,6 +196,8 @@ static int json_print_properties(cJSON *root, const mosquitto_property *properti
 				}
 				cJSON_AddItemToObject(user_json, strname, tmp);
 				free(strname);
+				strname = NULL;
+				strvalue = NULL;
 				tmp = NULL; /* Don't add this to prop_json below */
 				break;
 		}
@@ -208,8 +210,9 @@ static int json_print_properties(cJSON *root, const mosquitto_property *properti
 #endif
 
 
-static int json_print(const struct mosquitto_message *message, const mosquitto_property *properties, const struct tm *ti, bool escaped, bool pretty)
+static int json_print(const struct mosquitto_message *message, const mosquitto_property *properties, const struct tm *ti, int ns, bool escaped, bool pretty)
 {
+	char buf[100];
 #ifdef WITH_CJSON
 	cJSON *root;
 	cJSON *tmp;
@@ -221,7 +224,11 @@ static int json_print(const struct mosquitto_message *message, const mosquitto_p
 		return MOSQ_ERR_NOMEM;
 	}
 
-	tmp = cJSON_CreateNumber(time(NULL));
+	strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S.000000Z%z", ti);
+	snprintf(&buf[strlen("2020-05-06T21:48:00.")], 9, "%06d", ns/1000);
+	buf[strlen("2020-05-06T21:48:00.000000")] = 'Z';
+
+	tmp = cJSON_CreateStringReference(buf);
 	if(tmp == NULL){
 		cJSON_Delete(root);
 		return MOSQ_ERR_NOMEM;
@@ -304,10 +311,11 @@ static int json_print(const struct mosquitto_message *message, const mosquitto_p
 	
 	return MOSQ_ERR_SUCCESS;
 #else
-	char buf[100];
+	strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S.000000Z%z", ti);
+	snprintf(&buf[strlen("2020-05-06T21:48:00.")], 9, "%06d", ns/1000);
+	buf[strlen("2020-05-06T21:48:00.000000")] = 'Z';
 
-	strftime(buf, 100, "%s", ti);
-	printf("{\"tst\":%s,\"topic\":\"%s\",\"qos\":%d,\"retain\":%d,\"payloadlen\":%d,", buf, message->topic, message->qos, message->retain, message->payloadlen);
+	printf("{\"tst\":\"%s\",\"topic\":\"%s\",\"qos\":%d,\"retain\":%d,\"payloadlen\":%d,", buf, message->topic, message->qos, message->retain, message->payloadlen);
 	if(message->qos > 0){
 		printf("\"mid\":%d,", message->mid);
 	}
@@ -403,7 +411,7 @@ static void formatted_print(const struct mosq_config *lcfg, const struct mosquit
 								return;
 							}
 						}
-						if(json_print(message, properties, ti, true, lcfg->pretty) != MOSQ_ERR_SUCCESS){
+						if(json_print(message, properties, ti, ns, true, lcfg->pretty) != MOSQ_ERR_SUCCESS){
 							err_printf(lcfg, "Error: Out of memory.\n");
 							return;
 						}
@@ -416,7 +424,7 @@ static void formatted_print(const struct mosq_config *lcfg, const struct mosquit
 								return;
 							}
 						}
-						rc = json_print(message, properties, ti, false, lcfg->pretty);
+						rc = json_print(message, properties, ti, ns, false, lcfg->pretty);
 						if(rc == MOSQ_ERR_NOMEM){
 							err_printf(lcfg, "Error: Out of memory.\n");
 							return;
@@ -582,8 +590,27 @@ static void formatted_print(const struct mosq_config *lcfg, const struct mosquit
 }
 
 
+void rand_init(void)
+{
+	struct tm *ti = NULL;
+	long ns;
+
+	if(!get_time(&ti, &ns)){
+		srandom(ns);
+	}
+}
+
+
 void print_message(struct mosq_config *cfg, const struct mosquitto_message *message, const mosquitto_property *properties)
 {
+	long r;
+
+	if(cfg->random_filter < 10000){
+		r = random();
+		if((r%10000) >= cfg->random_filter){
+			return;
+		}
+	}
 	if(cfg->format){
 		formatted_print(cfg, message, properties);
 	}else if(cfg->verbose){

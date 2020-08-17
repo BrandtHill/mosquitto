@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2010-2019 Roger Light <roger@atchoo.org>
+Copyright (c) 2010-2020 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License v1.0
@@ -95,7 +95,7 @@ static int subs__send(struct mosquitto_db *db, struct mosquitto__subleaf *leaf, 
 		if(leaf->identifier){
 			mosquitto_property_add_varint(&properties, MQTT_PROP_SUBSCRIPTION_IDENTIFIER, leaf->identifier);
 		}
-		if(db__message_insert(db, leaf->context, mid, mosq_md_out, msg_qos, client_retain, stored, properties) == 1){
+		if(db__message_insert(db, leaf->context, mid, mosq_md_out, msg_qos, client_retain, stored, properties, true) == 1){
 			return 1;
 		}
 	}else{
@@ -190,6 +190,7 @@ static void sub__remove_shared_leaf(struct mosquitto__subhier *subhier, struct m
 	DL_DELETE(shared->subs, leaf);
 	if(shared->subs == NULL){
 		HASH_DELETE(hh, subhier->shared, shared);
+		mosquitto__free(shared->name);
 		mosquitto__free(shared);
 	}
 	mosquitto__free(leaf);
@@ -322,13 +323,15 @@ static int sub__add_context(struct mosquitto_db *db, struct mosquitto *context, 
 {
 	struct mosquitto__subhier *branch;
 	int topic_index = 0;
+	size_t topiclen;
 
 	/* Find leaf node */
 	while(topics && topics[topic_index] != NULL){
-		HASH_FIND(hh, subhier->children, topics[topic_index], strlen(topics[topic_index]), branch);
+		topiclen = strlen(topics[topic_index]);
+		HASH_FIND(hh, subhier->children, topics[topic_index], topiclen, branch);
 		if(!branch){
 			/* Not found */
-			branch = sub__add_hier_entry(subhier, &subhier->children, topics[topic_index], strlen(topics[topic_index]));
+			branch = sub__add_hier_entry(subhier, &subhier->children, topics[topic_index], topiclen);
 			if(!branch) return MOSQ_ERR_NOMEM;
 		}
 		subhier = branch;
@@ -562,6 +565,7 @@ int sub__add(struct mosquitto_db *db, struct mosquitto *context, const char *sub
 	const char *sharename = NULL;
 	char *local_sub;
 	char **topics;
+	size_t topiclen;
 
 	assert(root);
 	assert(*root);
@@ -570,9 +574,10 @@ int sub__add(struct mosquitto_db *db, struct mosquitto *context, const char *sub
 	rc = sub__topic_tokenise(sub, &local_sub, &topics, &sharename);
 	if(rc) return rc;
 
-	HASH_FIND(hh, *root, topics[0], strlen(topics[0]), subhier);
+	topiclen = strlen(topics[0]);
+	HASH_FIND(hh, *root, topics[0], topiclen, subhier);
 	if(!subhier){
-		subhier = sub__add_hier_entry(NULL, root, topics[0], strlen(topics[0]));
+		subhier = sub__add_hier_entry(NULL, root, topics[0], topiclen);
 		if(!subhier){
 			mosquitto__free(local_sub);
 			mosquitto__free(topics);

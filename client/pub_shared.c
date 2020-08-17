@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2009-2018 Roger Light <roger@atchoo.org>
+Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License v1.0
@@ -99,8 +99,9 @@ int load_file(const char *filename)
 		return 1;
 	}else if(cfg.msglen == 0){
 		fclose(fptr);
-		err_printf(&cfg, "Error: File \"%s\" is empty.\n", filename);
-		return 1;
+		cfg.message = NULL;
+		cfg.msglen = 0;
+		return 0;
 	}else if(cfg.msglen < 0){
 		fclose(fptr);
 		err_printf(&cfg, "Error: Unable to determine size of file \"%s\".\n", filename);

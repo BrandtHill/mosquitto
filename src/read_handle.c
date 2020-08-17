@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2009-2019 Roger Light <roger@atchoo.org>
+Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License v1.0
@@ -32,6 +32,8 @@ Contributors:
 
 int handle__packet(struct mosquitto_db *db, struct mosquitto *context)
 {
+	int rc = MOSQ_ERR_INVAL;
+
 	if(!context) return MOSQ_ERR_INVAL;
 
 	switch((context->in_packet.command)&0xF0){
@@ -44,7 +46,8 @@ int handle__packet(struct mosquitto_db *db, struct mosquitto *context)
 		case CMD_PUBCOMP:
 			return handle__pubackcomp(db, context, "PUBCOMP");
 		case CMD_PUBLISH:
-			return handle__publish(db, context);
+			rc = handle__publish(db, context);
+			break;
 		case CMD_PUBREC:
 			return handle__pubrec(db, context);
 		case CMD_PUBREL:
@@ -54,9 +57,11 @@ int handle__packet(struct mosquitto_db *db, struct mosquitto *context)
 		case CMD_DISCONNECT:
 			return handle__disconnect(db, context);
 		case CMD_SUBSCRIBE:
-			return handle__subscribe(db, context);
+			rc = handle__subscribe(db, context);
+			break;
 		case CMD_UNSUBSCRIBE:
-			return handle__unsubscribe(db, context);
+			rc = handle__unsubscribe(db, context);
+			break;
 #ifdef WITH_BRIDGE
 		case CMD_CONNACK:
 			return handle__connack(db, context);
@@ -68,8 +73,24 @@ int handle__packet(struct mosquitto_db *db, struct mosquitto *context)
 		case CMD_AUTH:
 			return handle__auth(db, context);
 		default:
-			/* If we don't recognise the command, return an error straight away. */
-			return MOSQ_ERR_PROTOCOL;
+			rc = MOSQ_ERR_PROTOCOL;
 	}
+
+	if(context->protocol == mosq_p_mqtt5){
+		if(rc == MOSQ_ERR_PROTOCOL){
+			send__disconnect(context, MQTT_RC_PROTOCOL_ERROR, NULL);
+		}else if(rc == MOSQ_ERR_MALFORMED_PACKET){
+			send__disconnect(context, MQTT_RC_MALFORMED_PACKET, NULL);
+		}else if(rc == MOSQ_ERR_QOS_NOT_SUPPORTED){
+			send__disconnect(context, MQTT_RC_QOS_NOT_SUPPORTED, NULL);
+		}else if(rc == MOSQ_ERR_RETAIN_NOT_SUPPORTED){
+			send__disconnect(context, MQTT_RC_RETAIN_NOT_SUPPORTED, NULL);
+		}else if(rc == MOSQ_ERR_TOPIC_ALIAS_INVALID){
+			send__disconnect(context, MQTT_RC_TOPIC_ALIAS_INVALID, NULL);
+		}else if(rc == MOSQ_ERR_UNKNOWN || rc == MOSQ_ERR_NOMEM){
+			send__disconnect(context, MQTT_RC_UNSPECIFIED, NULL);
+		}
+	}
+	return rc;
 }
 

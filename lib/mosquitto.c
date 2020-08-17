@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2010-2019 Roger Light <roger@atchoo.org>
+Copyright (c) 2010-2020 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License v1.0
@@ -33,6 +33,7 @@ Contributors:
 #include "packet_mosq.h"
 #include "will_mosq.h"
 
+static unsigned int init_refcount = 0;
 
 void mosquitto__destroy(struct mosquitto *mosq);
 
@@ -46,31 +47,47 @@ int mosquitto_lib_version(int *major, int *minor, int *revision)
 
 int mosquitto_lib_init(void)
 {
+	int rc;
+
+	if (init_refcount == 0) {
 #ifdef WIN32
-	srand(GetTickCount64());
+		srand(GetTickCount64());
 #elif _POSIX_TIMERS>0 && defined(_POSIX_MONOTONIC_CLOCK)
-	struct timespec tp;
+		struct timespec tp;
 
-	clock_gettime(CLOCK_MONOTONIC, &tp);
-	srand(tp.tv_nsec);
+		clock_gettime(CLOCK_MONOTONIC, &tp);
+		srand(tp.tv_nsec);
 #elif defined(__APPLE__)
-	uint64_t ticks;
+		uint64_t ticks;
 
-	ticks = mach_absolute_time();
-	srand((unsigned int)ticks);
+		ticks = mach_absolute_time();
+		srand((unsigned int)ticks);
 #else
-	struct timeval tv;
+		struct timeval tv;
 
-	gettimeofday(&tv, NULL);
-	srand(tv.tv_sec*1000 + tv.tv_usec/1000);
+		gettimeofday(&tv, NULL);
+		srand(tv.tv_sec*1000 + tv.tv_usec/1000);
 #endif
 
-	return net__init();
+		rc = net__init();
+		if (rc != MOSQ_ERR_SUCCESS) {
+			return rc;
+		}
+	}
+
+	init_refcount++;
+	return MOSQ_ERR_SUCCESS;
 }
 
 int mosquitto_lib_cleanup(void)
 {
-	net__cleanup();
+	if (init_refcount == 1) {
+		net__cleanup();
+	}
+
+	if (init_refcount > 0) {
+		--init_refcount;
+	}
 
 	return MOSQ_ERR_SUCCESS;
 }
@@ -567,7 +584,6 @@ int mosquitto_sub_topic_tokenise(const char *subtopic, char ***topics, int *coun
 	if(!(*topics)) return MOSQ_ERR_NOMEM;
 
 	start = 0;
-	stop = 0;
 	hier = 0;
 
 	for(i=0; i<len+1; i++){

@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2009-2019 Roger Light <roger@atchoo.org>
+Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License v1.0
@@ -29,6 +29,7 @@ Contributors:
 
 #include "mosquitto_broker_internal.h"
 #include "memory_mosq.h"
+#include "misc_mosq.h"
 #include "util_mosq.h"
 
 extern struct mosquitto_db int_db;
@@ -118,8 +119,10 @@ int log__init(struct mosquitto__config *config)
 		restore_privileges();
 	}
 #ifdef WITH_DLT
-	DLT_REGISTER_APP("MQTT","mosquitto log");
-	dlt_register_context(&dltContext, "MQTT", "mosquitto DLT context");
+	if(log_destinations & MQTT3_LOG_DLT){
+		DLT_REGISTER_APP("MQTT","mosquitto log");
+		dlt_register_context(&dltContext, "MQTT", "mosquitto DLT context");
+	}
 #endif
 	return rc;
 }
@@ -141,8 +144,10 @@ int log__close(struct mosquitto__config *config)
 	}
 
 #ifdef WITH_DLT
-	dlt_unregister_context(&dltContext);
-	DLT_UNREGISTER_APP();
+	if(log_destinations & MQTT3_LOG_DLT){
+		dlt_unregister_context(&dltContext);
+		DLT_UNREGISTER_APP();
+	}
 #endif
 	/* FIXME - do something for all destinations! */
 	return MOSQ_ERR_SUCCESS;
@@ -346,7 +351,7 @@ int log__vprintf(int priority, const char *fmt, va_list va)
 			}
 		}
 #ifdef WITH_DLT
-		if(priority != MOSQ_LOG_INTERNAL){
+		if(log_destinations & MQTT3_LOG_DLT && priority != MOSQ_LOG_INTERNAL){
 			DLT_LOG_STRING(dltContext, get_dlt_level(priority), s);
 		}
 #endif
@@ -385,7 +390,7 @@ void log__internal(const char *fmt, ...)
 		return;
 	}
 
-	log__printf(NULL, MOSQ_LOG_INTERNAL, "%s%s%s", "\e[32m", buf, "\e[0m"); 
+	log__printf(NULL, MOSQ_LOG_INTERNAL, "%s%s%s", "\e[32m", buf, "\e[0m");
 }
 
 int mosquitto_log_vprintf(int level, const char *fmt, va_list va)

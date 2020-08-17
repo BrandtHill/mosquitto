@@ -73,17 +73,17 @@ int send__publish(struct mosquitto *mosq, uint16_t mid, const char *topic, uint3
 	return MOSQ_ERR_SUCCESS;
 }
 
-int send__pubcomp(struct mosquitto *mosq, uint16_t mid)
+int send__pubcomp(struct mosquitto *mosq, uint16_t mid, const mosquitto_property *properties)
 {
 	return MOSQ_ERR_SUCCESS;
 }
 
-int send__pubrec(struct mosquitto *mosq, uint16_t mid, uint8_t reason_code)
+int send__pubrec(struct mosquitto *mosq, uint16_t mid, uint8_t reason_code, const mosquitto_property *properties)
 {
 	return MOSQ_ERR_SUCCESS;
 }
 
-int send__pubrel(struct mosquitto *mosq, uint16_t mid)
+int send__pubrel(struct mosquitto *mosq, uint16_t mid, const mosquitto_property *properties)
 {
 	return MOSQ_ERR_SUCCESS;
 }
@@ -133,7 +133,7 @@ int retain__queue(struct mosquitto_db *db, struct mosquitto *context, const char
 	return MOSQ_ERR_SUCCESS;
 }
 
-int retain__store(struct mosquitto_db *db, const char *topic, struct mosquitto_msg_store *stored, struct sub__token *tokens)
+int retain__store(struct mosquitto_db *db, const char *topic, struct mosquitto_msg_store *stored, char **split_topics)
 {
 	return MOSQ_ERR_SUCCESS;
 }

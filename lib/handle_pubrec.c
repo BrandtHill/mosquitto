@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2009-2019 Roger Light <roger@atchoo.org>
+Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License v1.0
@@ -104,7 +104,7 @@ int handle__pubrec(struct mosquitto_db *db, struct mosquitto *mosq)
 	}else if(rc != MOSQ_ERR_SUCCESS){
 		return rc;
 	}
-	rc = send__pubrel(mosq, mid);
+	rc = send__pubrel(mosq, mid, NULL);
 	if(rc) return rc;
 
 	return MOSQ_ERR_SUCCESS;

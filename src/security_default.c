@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2011-2019 Roger Light <roger@atchoo.org>
+Copyright (c) 2011-2020 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License v1.0
@@ -16,6 +16,7 @@ Contributors:
 
 #include "config.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -23,6 +24,7 @@ Contributors:
 #include "memory_mosq.h"
 #include "mqtt_protocol.h"
 #include "send_mosq.h"
+#include "misc_mosq.h"
 #include "util_mosq.h"
 
 static int aclfile__parse(struct mosquitto_db *db, struct mosquitto__security_options *security_opts);
@@ -453,24 +455,32 @@ int mosquitto_acl_check_default(struct mosquitto_db *db, struct mosquitto *conte
 
 static int aclfile__parse(struct mosquitto_db *db, struct mosquitto__security_options *security_opts)
 {
-	FILE *aclfptr;
-	char buf[1024];
+	FILE *aclfptr = NULL;
 	char *token;
 	char *user = NULL;
 	char *topic;
 	char *access_s;
 	int access;
-	int rc;
+	int rc = MOSQ_ERR_SUCCESS;
 	int slen;
 	int topic_pattern;
 	char *saveptr = NULL;
+	char *buf = NULL;
+	int buflen = 256;
 
 	if(!db || !db->config) return MOSQ_ERR_INVAL;
 	if(!security_opts) return MOSQ_ERR_INVAL;
 	if(!security_opts->acl_file) return MOSQ_ERR_SUCCESS;
 
+	buf = mosquitto__malloc(buflen);
+	if(buf == NULL){
+		log__printf(NULL, MOSQ_LOG_ERR, "Error: Out of memory.");
+		return 1;
+	}
+
 	aclfptr = mosquitto__fopen(security_opts->acl_file, "rt", false);
 	if(!aclfptr){
+		mosquitto__free(buf);
 		log__printf(NULL, MOSQ_LOG_ERR, "Error: Unable to open acl_file \"%s\".", security_opts->acl_file);
 		return 1;
 	}
@@ -478,9 +488,9 @@ static int aclfile__parse(struct mosquitto_db *db, struct mosquitto__security_op
 	// topic [read|write] <topic> 
 	// user <user>
 
-	while(fgets(buf, 1024, aclfptr)){
+	while(fgets_extending(&buf, &buflen, aclfptr)){
 		slen = strlen(buf);
-		while(slen > 0 && (buf[slen-1] == 10 || buf[slen-1] == 13)){
+		while(slen > 0 && isspace(buf[slen-1])){
 			buf[slen-1] = '\0';
 			slen = strlen(buf);
 		}
@@ -499,17 +509,12 @@ static int aclfile__parse(struct mosquitto_db *db, struct mosquitto__security_op
 				access_s = strtok_r(NULL, " ", &saveptr);
 				if(!access_s){
 					log__printf(NULL, MOSQ_LOG_ERR, "Error: Empty topic in acl_file \"%s\".", security_opts->acl_file);
-					mosquitto__free(user);
-					fclose(aclfptr);
-					return MOSQ_ERR_INVAL;
+					rc = MOSQ_ERR_INVAL;
+					break;
 				}
 				token = strtok_r(NULL, "", &saveptr);
 				if(token){
-					topic = token;
-					/* Ignore duplicate spaces */
-					while(topic[0] == ' '){
-						topic++;
-					}
+					topic = misc__trimblanks(token);
 				}else{
 					topic = access_s;
 					access_s = NULL;
@@ -525,54 +530,60 @@ static int aclfile__parse(struct mosquitto_db *db, struct mosquitto__security_op
 						access = MOSQ_ACL_NONE;
 					}else{
 						log__printf(NULL, MOSQ_LOG_ERR, "Error: Invalid topic access type \"%s\" in acl_file \"%s\".", access_s, security_opts->acl_file);
-						mosquitto__free(user);
-						fclose(aclfptr);
-						return MOSQ_ERR_INVAL;
+						rc = MOSQ_ERR_INVAL;
+						break;
 					}
 				}else{
 					access = MOSQ_ACL_READ | MOSQ_ACL_WRITE;
 				}
+				rc = mosquitto_sub_topic_check(topic);
+				if(rc != MOSQ_ERR_SUCCESS){
+					log__printf(NULL, MOSQ_LOG_ERR, "Error: Invalid ACL topic \"%s\" in acl_file \"%s\".", topic, security_opts->acl_file);
+					rc = MOSQ_ERR_INVAL;
+					break;
+				}
+
 				if(topic_pattern == 0){
 					rc = add__acl(security_opts, user, topic, access);
 				}else{
 					rc = add__acl_pattern(security_opts, topic, access);
 				}
 				if(rc){
-					mosquitto__free(user);
-					fclose(aclfptr);
-					return rc;
+					break;
 				}
 			}else if(!strcmp(token, "user")){
 				token = strtok_r(NULL, "", &saveptr);
 				if(token){
-					/* Ignore duplicate spaces */
-					while(token[0] == ' '){
-						token++;
+					token = misc__trimblanks(token);
+					if(slen == 0){
+						log__printf(NULL, MOSQ_LOG_ERR, "Error: Missing username in acl_file \"%s\".", security_opts->acl_file);
+						rc = MOSQ_ERR_INVAL;
+						break;
 					}
 					mosquitto__free(user);
 					user = mosquitto__strdup(token);
 					if(!user){
-						fclose(aclfptr);
-						return MOSQ_ERR_NOMEM;
+						rc = MOSQ_ERR_NOMEM;
+						break;
 					}
 				}else{
 					log__printf(NULL, MOSQ_LOG_ERR, "Error: Missing username in acl_file \"%s\".", security_opts->acl_file);
-					mosquitto__free(user);
-					fclose(aclfptr);
-					return 1;
+					rc = MOSQ_ERR_INVAL;
+					break;
 				}
 			}else{
 				log__printf(NULL, MOSQ_LOG_ERR, "Error: Invalid line in acl_file \"%s\": %s.", security_opts->acl_file, buf);
-				fclose(aclfptr);
-				return 1;
+				rc = MOSQ_ERR_INVAL;
+				break;
 			}
 		}
 	}
 
+	mosquitto__free(buf);
 	mosquitto__free(user);
 	fclose(aclfptr);
 
-	return MOSQ_ERR_SUCCESS;
+	return rc;
 }
 
 static void free__acl(struct mosquitto__acl *acl)
@@ -682,19 +693,26 @@ static int pwfile__parse(const char *file, struct mosquitto__unpwd **root)
 {
 	FILE *pwfile;
 	struct mosquitto__unpwd *unpwd;
-	char buf[256];
 	char *username, *password;
-	int len;
 	char *saveptr = NULL;
+	char *buf;
+	int buflen = 256;
 
+	buf = mosquitto__malloc(buflen);
+	if(buf == NULL){
+		log__printf(NULL, MOSQ_LOG_ERR, "Error: Out of memory.");
+		return 1;
+	}
+	
 	pwfile = mosquitto__fopen(file, "rt", false);
 	if(!pwfile){
 		log__printf(NULL, MOSQ_LOG_ERR, "Error: Unable to open pwfile \"%s\".", file);
+		mosquitto__free(buf);
 		return 1;
 	}
 
 	while(!feof(pwfile)){
-		if(fgets(buf, 256, pwfile)){
+		if(fgets_extending(&buf, &buflen, pwfile)){
 			if(buf[0] == '#') continue;
 			if(!strchr(buf, ':')) continue;
 
@@ -703,32 +721,41 @@ static int pwfile__parse(const char *file, struct mosquitto__unpwd **root)
 				unpwd = mosquitto__calloc(1, sizeof(struct mosquitto__unpwd));
 				if(!unpwd){
 					fclose(pwfile);
+					mosquitto__free(buf);
 					return MOSQ_ERR_NOMEM;
 				}
+				username = misc__trimblanks(username);
+				if(strlen(username) > 65535){
+					log__printf(NULL, MOSQ_LOG_NOTICE, "Warning: Invalid line in password file '%s', username too long.", file);
+					mosquitto__free(unpwd);
+					continue;
+				}
+
 				unpwd->username = mosquitto__strdup(username);
 				if(!unpwd->username){
 					mosquitto__free(unpwd);
+					mosquitto__free(buf);
 					fclose(pwfile);
 					return MOSQ_ERR_NOMEM;
 				}
-				len = strlen(unpwd->username);
-				while(unpwd->username[len-1] == 10 || unpwd->username[len-1] == 13){
-					unpwd->username[len-1] = '\0';
-					len = strlen(unpwd->username);
-				}
 				password = strtok_r(NULL, ":", &saveptr);
 				if(password){
+					password = misc__trimblanks(password);
+
+					if(strlen(password) > 65535){
+						log__printf(NULL, MOSQ_LOG_NOTICE, "Warning: Invalid line in password file '%s', password too long.", file);
+						mosquitto__free(unpwd->username);
+						mosquitto__free(unpwd);
+						continue;
+					}
+
 					unpwd->password = mosquitto__strdup(password);
 					if(!unpwd->password){
 						fclose(pwfile);
 						mosquitto__free(unpwd->username);
 						mosquitto__free(unpwd);
+						mosquitto__free(buf);
 						return MOSQ_ERR_NOMEM;
-					}
-					len = strlen(unpwd->password);
-					while(len && (unpwd->password[len-1] == 10 || unpwd->password[len-1] == 13)){
-						unpwd->password[len-1] = '\0';
-						len = strlen(unpwd->password);
 					}
 
 					HASH_ADD_KEYPTR(hh, *root, unpwd->username, strlen(unpwd->username), unpwd);
@@ -741,6 +768,7 @@ static int pwfile__parse(const char *file, struct mosquitto__unpwd **root)
 		}
 	}
 	fclose(pwfile);
+	mosquitto__free(buf);
 
 	return MOSQ_ERR_SUCCESS;
 }
@@ -880,7 +908,7 @@ static int mosquitto__memcmp_const(const void *a, const void *b, size_t len)
 #endif
 
 
-int mosquitto_unpwd_check_default(struct mosquitto_db *db, struct mosquitto *context, const char *username, const char *password)
+int mosquitto_unpwd_check_default(struct mosquitto_db *db, struct mosquitto *context)
 {
 	struct mosquitto__unpwd *u, *tmp;
 	struct mosquitto__unpwd *unpwd_ref;
@@ -895,13 +923,13 @@ int mosquitto_unpwd_check_default(struct mosquitto_db *db, struct mosquitto *con
 	if(db->config->per_listener_settings){
 		if(context->bridge) return MOSQ_ERR_SUCCESS;
 		if(!context->listener) return MOSQ_ERR_INVAL;
-		if(!context->listener->unpwd) return MOSQ_ERR_PLUGIN_DEFER;
+		if(context->listener->security_options.password_file == NULL) return MOSQ_ERR_PLUGIN_DEFER;
 		unpwd_ref = context->listener->unpwd;
 	}else{
-		if(!db->unpwd) return MOSQ_ERR_PLUGIN_DEFER;
+		if(db->config->security_options.password_file == NULL) return MOSQ_ERR_PLUGIN_DEFER;
 		unpwd_ref = db->unpwd;
 	}
-	if(!username){
+	if(context->username == NULL){
 		/* Check must be made only after checking unpwd_ref.
 		 * This is DENY here, because in MQTT v5 username can be missing when
 		 * password is present, but we don't support that. */
@@ -909,11 +937,11 @@ int mosquitto_unpwd_check_default(struct mosquitto_db *db, struct mosquitto *con
 	}
 
 	HASH_ITER(hh, unpwd_ref, u, tmp){
-		if(!strcmp(u->username, username)){
+		if(!strcmp(u->username, context->username)){
 			if(u->password){
-				if(password){
+				if(context->password){
 #ifdef WITH_TLS
-					rc = pw__digest(password, u->salt, u->salt_len, hash, &hash_len);
+					rc = pw__digest(context->password, u->salt, u->salt_len, hash, &hash_len);
 					if(rc == MOSQ_ERR_SUCCESS){
 						if(hash_len == u->password_len && !mosquitto__memcmp_const(u->password, hash, hash_len)){
 							return MOSQ_ERR_SUCCESS;
@@ -924,7 +952,7 @@ int mosquitto_unpwd_check_default(struct mosquitto_db *db, struct mosquitto *con
 						return rc;
 					}
 #else
-					if(!strcmp(u->password, password)){
+					if(!strcmp(u->password, context->password)){
 						return MOSQ_ERR_SUCCESS;
 					}
 #endif
@@ -1139,7 +1167,7 @@ int mosquitto_security_apply_default(struct mosquitto_db *db)
 #endif
 		{
 			/* Username/password check only if the identity/subject check not used */
-			if(mosquitto_unpwd_check(db, context, context->username, context->password) != MOSQ_ERR_SUCCESS){
+			if(mosquitto_unpwd_check(db, context) != MOSQ_ERR_SUCCESS){
 				mosquitto__set_state(context, mosq_cs_disconnecting);
 				do_disconnect(db, context, MOSQ_ERR_AUTH);
 				continue;

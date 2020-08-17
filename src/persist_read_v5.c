@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2010-2018 Roger Light <roger@atchoo.org>
+Copyright (c) 2010-2020 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License v1.0
@@ -74,8 +74,10 @@ int persist__chunk_client_read_v5(FILE *db_fptr, struct P_client *chunk)
 	chunk->F.id_len = ntohs(chunk->F.id_len);
 
 	rc = persist__read_string_len(db_fptr, &chunk->client_id, chunk->F.id_len);
-	if(rc || !chunk->client_id){
+	if(rc){
 		return 1;
+	}else if(chunk->client_id == NULL){
+		return -1;
 	}else{
 		return MOSQ_ERR_SUCCESS;
 	}

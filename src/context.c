@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2009-2019 Roger Light <roger@atchoo.org>
+Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License v1.0
@@ -97,11 +97,15 @@ struct mosquitto *context__init(struct mosquitto_db *db, mosq_sock_t sock)
  * but it will mean that CONNACK messages will never get sent for bad protocol
  * versions for example.
  */
-void context__cleanup(struct mosquitto_db *db, struct mosquitto *context, bool do_free)
+void context__cleanup(struct mosquitto_db *db, struct mosquitto *context, bool force_free)
 {
 	struct mosquitto__packet *packet;
 
 	if(!context) return;
+
+	if(force_free){
+		context->clean_start = true;
+	}
 
 #ifdef WITH_BRIDGE
 	if(context->bridge){
@@ -121,10 +125,10 @@ void context__cleanup(struct mosquitto_db *db, struct mosquitto *context, bool d
 	context->password = NULL;
 
 	net__socket_close(db, context);
-	if(do_free || context->clean_start){
+	if(force_free){
 		sub__clean_session(db, context);
-		db__messages_delete(db, context);
 	}
+	db__messages_delete(db, context, force_free);
 
 	mosquitto__free(context->address);
 	context->address = NULL;
@@ -148,9 +152,6 @@ void context__cleanup(struct mosquitto_db *db, struct mosquitto *context, bool d
 		context->out_packet = context->out_packet->next;
 		mosquitto__free(packet);
 	}
-	if(do_free || context->clean_start){
-		db__messages_delete(db, context);
-	}
 #if defined(WITH_BROKER) && defined(__GLIBC__) && defined(WITH_ADNS)
 	if(context->adns){
 		gai_cancel(context->adns);
@@ -158,7 +159,7 @@ void context__cleanup(struct mosquitto_db *db, struct mosquitto *context, bool d
 		mosquitto__free(context->adns);
 	}
 #endif
-	if(do_free){
+	if(force_free){
 		mosquitto__free(context);
 	}
 }

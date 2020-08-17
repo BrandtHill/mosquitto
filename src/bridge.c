@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2009-2019 Roger Light <roger@atchoo.org>
+Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License v1.0
@@ -30,10 +30,6 @@ Contributors:
 #endif
 
 #ifndef WIN32
-#ifdef WITH_EPOLL
-#include <sys/epoll.h>
-#endif
-#include <poll.h>
 #include <unistd.h>
 #else
 #include <process.h>
@@ -58,6 +54,19 @@ Contributors:
 
 static void bridge__backoff_step(struct mosquitto *context);
 static void bridge__backoff_reset(struct mosquitto *context);
+
+void bridge__start_all(struct mosquitto_db *db)
+{
+	int i;
+
+	for(i=0; i<db->config->bridge_count; i++){
+		if(bridge__new(db, &(db->config->bridges[i]))){
+			log__printf(NULL, MOSQ_LOG_WARNING, "Warning: Unable to connect to bridge %s.", 
+					db->config->bridges[i].name);
+		}
+	}
+}
+
 
 int bridge__new(struct mosquitto_db *db, struct mosquitto__bridge *bridge)
 {
@@ -109,6 +118,10 @@ int bridge__new(struct mosquitto_db *db, struct mosquitto__bridge *bridge)
 #endif
 
 	bridge->try_private_accepted = true;
+	if(bridge->clean_start_local == -1){
+		/* default to "regular" clean start setting */
+		bridge->clean_start_local = bridge->clean_start;
+	}
 	new_context->retain_available = bridge->outgoing_retain;
 	new_context->protocol = bridge->protocol_version;
 
@@ -152,9 +165,7 @@ int bridge__connect_step1(struct mosquitto_db *db, struct mosquitto *context)
 	bridge__packet_cleanup(context);
 	db__message_reconnect_reset(db, context);
 
-	if(context->clean_start){
-		db__messages_delete(db, context);
-	}
+	db__messages_delete(db, context);
 
 	/* Delete all local subscriptions even for clean_start==false. We don't
 	 * remove any messages and the next loop carries out the resubscription
@@ -331,9 +342,7 @@ int bridge__connect(struct mosquitto_db *db, struct mosquitto *context)
 	bridge__packet_cleanup(context);
 	db__message_reconnect_reset(db, context);
 
-	if(context->clean_start){
-		db__messages_delete(db, context);
-	}
+	db__messages_delete(db, context, false);
 
 	/* Delete all local subscriptions even for clean_start==false. We don't
 	 * remove any messages and the next loop carries out the resubscription
@@ -520,20 +529,12 @@ int bridge__on_connect(struct mosquitto_db *db, struct mosquitto *context)
 int bridge__register_local_connections(struct mosquitto_db *db)
 {
 #ifdef WITH_EPOLL
-	struct epoll_event ev;
 	struct mosquitto *context, *ctxt_tmp = NULL;
-
-	memset(&ev, 0, sizeof(struct epoll_event));
 
 	HASH_ITER(hh_sock, db->contexts_by_sock, context, ctxt_tmp){
 		if(context->bridge){
-			ev.data.fd = context->sock;
-			ev.events = EPOLLIN;
-			context->events = EPOLLIN;
-			if (epoll_ctl(db->epollfd, EPOLL_CTL_ADD, context->sock, &ev) == -1) {
+			if(mux__add_in(db, context)){
 				log__printf(NULL, MOSQ_LOG_ERR, "Error in epoll initial registering bridge: %s", strerror(errno));
-				(void)close(db->epollfd);
-				db->epollfd = 0;
 				return MOSQ_ERR_UNKNOWN;
 			}
 		}
@@ -639,19 +640,12 @@ static void bridge__backoff_reset(struct mosquitto *context)
 	}
 }
 
-#ifdef WITH_EPOLL
 void bridge_check(struct mosquitto_db *db)
-#else
-void bridge_check(struct mosquitto_db *db, struct pollfd *pollfds, int *pollfd_index)
-#endif
 {
 	static time_t last_check = 0;
 	time_t now;
 	struct mosquitto *context = NULL;
 	socklen_t len;
-#ifdef WITH_EPOLL
-	struct epoll_event ev;
-#endif
 	int i;
 	int rc;
 	int err;
@@ -660,9 +654,6 @@ void bridge_check(struct mosquitto_db *db, struct pollfd *pollfds, int *pollfd_i
 
 	if(now <= last_check) return;
 
-#ifdef WITH_EPOLL
-	memset(&ev, 0, sizeof(struct epoll_event));
-#endif
 	for(i=0; i<db->bridge_count; i++){
 		if(!db->bridges[i]) continue;
 
@@ -736,29 +727,10 @@ void bridge_check(struct mosquitto_db *db, struct pollfd *pollfds, int *pollfd_i
 						}else if(rc == 0){
 							rc = bridge__connect_step2(db, context);
 							if(rc == MOSQ_ERR_SUCCESS){
-#ifdef WITH_EPOLL
-								ev.data.fd = context->sock;
-								ev.events = EPOLLIN;
+								rc = mux__add_in(db, context);
 								if(context->current_out_packet){
-									ev.events |= EPOLLOUT;
+									rc = mux__add_out(db, context);
 								}
-								if(epoll_ctl(db->epollfd, EPOLL_CTL_ADD, context->sock, &ev) == -1) {
-									if((errno != EEXIST)||(epoll_ctl(db->epollfd, EPOLL_CTL_MOD, context->sock, &ev) == -1)) {
-											log__printf(NULL, MOSQ_LOG_DEBUG, "Error in epoll re-registering bridge: %s", strerror(errno));
-									}
-								}else{
-									context->events = ev.events;
-								}
-#else
-								pollfds[*pollfd_index].fd = context->sock;
-								pollfds[*pollfd_index].events = POLLIN;
-								pollfds[*pollfd_index].revents = 0;
-								if(context->current_out_packet){
-									pollfds[*pollfd_index].events |= POLLOUT;
-								}
-								context->pollfd_index = *pollfd_index;
-								(*pollfd_index)++;
-#endif
 							}else if(rc == MOSQ_ERR_CONN_PENDING){
 								context->bridge->restart_t = 0;
 							}else{
@@ -778,10 +750,6 @@ void bridge_check(struct mosquitto_db *db, struct pollfd *pollfds, int *pollfd_i
 							context->bridge->restart_t = 0;
 						}
 					}else{
-#ifdef WITH_EPOLL
-						/* clean any events triggered in previous connection */
-						context->events = 0;
-#endif
 						rc = bridge__connect_step1(db, context);
 						if(rc){
 							context->bridge->cur_address++;
@@ -801,29 +769,10 @@ void bridge_check(struct mosquitto_db *db, struct pollfd *pollfds, int *pollfd_i
 							if(context->bridge->round_robin == false && context->bridge->cur_address != 0){
 								context->bridge->primary_retry = now + 5;
 							}
-#ifdef WITH_EPOLL
-							ev.data.fd = context->sock;
-							ev.events = EPOLLIN;
+							mux__add_in(db, context);
 							if(context->current_out_packet){
-								ev.events |= EPOLLOUT;
+								rc = mux__add_out(db, context);
 							}
-							if(epoll_ctl(db->epollfd, EPOLL_CTL_ADD, context->sock, &ev) == -1) {
-								if((errno != EEXIST)||(epoll_ctl(db->epollfd, EPOLL_CTL_MOD, context->sock, &ev) == -1)) {
-										log__printf(NULL, MOSQ_LOG_DEBUG, "Error in epoll re-registering bridge: %s", strerror(errno));
-								}
-							}else{
-								context->events = ev.events;
-							}
-#else
-							pollfds[*pollfd_index].fd = context->sock;
-							pollfds[*pollfd_index].events = POLLIN;
-							pollfds[*pollfd_index].revents = 0;
-							if(context->current_out_packet){
-								pollfds[*pollfd_index].events |= POLLOUT;
-							}
-							context->pollfd_index = *pollfd_index;
-							(*pollfd_index)++;
-#endif
 						}else{
 							context->bridge->cur_address++;
 							if(context->bridge->cur_address == context->bridge->address_count){

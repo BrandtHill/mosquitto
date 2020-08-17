@@ -17,7 +17,7 @@ test-compile :
 ptest : test-compile
 	./test.py
 
-test : test-compile 01 02 03 04 05 06 07 08 09 10 11 12
+test : test-compile 01 02 03 04 05 06 07 08 09 10 11 12 13
 
 01 :
 	./01-connect-anon-denied.py
@@ -125,6 +125,7 @@ endif
 	./06-bridge-br2b-disconnect-qos1.py
 	./06-bridge-br2b-disconnect-qos2.py
 	./06-bridge-br2b-remapping.py
+	./06-bridge-clean-session.py
 	./06-bridge-fail-persist-resend-qos1.py
 	./06-bridge-fail-persist-resend-qos2.py
 	./06-bridge-no-local.py
@@ -215,3 +216,8 @@ endif
 	./12-prop-subpub-content-type.py
 	./12-prop-subpub-payload-format.py
 	./12-prop-topic-alias-invalid.py
+
+13 :
+	./13-malformed-publish-v5.py
+	./13-malformed-subscribe-v5.py
+	./13-malformed-unsubscribe-v5.py

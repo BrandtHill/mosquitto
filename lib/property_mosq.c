@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2018 Roger Light <roger@atchoo.org>
+Copyright (c) 2018-2020 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License v1.0
@@ -1092,6 +1092,8 @@ const mosquitto_property *mosquitto_property_read_binary(const mosquitto_propert
 	const mosquitto_property *p;
 	if(!proplist || (value && !len) || (!value && len)) return NULL;
 
+	if(value) *value = NULL;
+
 	p = property__get_property(proplist, identifier, skip_first);
 	if(!p) return NULL;
 	if(p->identifier != MQTT_PROP_CORRELATION_DATA
@@ -1145,6 +1147,9 @@ const mosquitto_property *mosquitto_property_read_string_pair(const mosquitto_pr
 {
 	const mosquitto_property *p;
 	if(!proplist) return NULL;
+
+	if(name) *name = NULL;
+	if(value) *value = NULL;
 
 	p = property__get_property(proplist, identifier, skip_first);
 	if(!p) return NULL;

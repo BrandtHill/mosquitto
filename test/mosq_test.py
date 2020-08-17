@@ -60,6 +60,8 @@ def start_broker(filename, cmd=None, port=0, use_conf=False, expect_fail=False):
             return broker
 
     if expect_fail == False:
+        outs, errs = broker.communicate(timeout=1)
+        print("FAIL: unable to start broker: %s" % errs)
         raise IOError
     else:
         return None
@@ -92,17 +94,31 @@ def packet_matches(name, recvd, expected):
         except struct.error:
             print("Received (not decoded, len=%d): %s" % (len(recvd), recvd))
             for i in range(0, len(recvd)):
-                print('%c'%(recvd[i]),)
+                print('%02x'%(recvd[i]),)
         try:
             print("Expected: "+to_string(expected))
         except struct.error:
             print("Expected (not decoded, len=%d): %s" % (len(expected), expected))
             for i in range(0, len(expected)):
-                print('%c'%(expected[i]),)
+                print('%02x'%(expected[i]),)
 
         return 0
     else:
         return 1
+
+
+def receive_unordered(sock, recv1_packet, recv2_packet, error_string):
+    expected1 = recv1_packet + recv2_packet
+    expected2 = recv2_packet + recv1_packet
+    recvd = b''
+    while len(recvd) < len(expected1):
+        recvd += sock.recv(1)
+
+    if recvd == expected1 or recvd == expected2:
+        return
+    else:
+        packet_matches(error_string, recvd, expected2)
+        raise ValueError(error_string)
 
 
 def do_send_receive(sock, send_packet, receive_packet, error_string="send receive error"):
@@ -115,6 +131,22 @@ def do_send_receive(sock, send_packet, receive_packet, error_string="send receiv
         total_sent += sent
 
     if expect_packet(sock, error_string, receive_packet):
+        return sock
+    else:
+        sock.close()
+        raise ValueError
+
+
+# Useful for mocking a client receiving (with ack) a qos1 publish
+def do_receive_send(sock, receive_packet, send_packet, error_string="receive send error"):
+    if expect_packet(sock, error_string, receive_packet):
+        size = len(send_packet)
+        total_sent = 0
+        while total_sent < size:
+            sent = sock.send(send_packet[total_sent:])
+            if sent == 0:
+                raise RuntimeError("socket connection broken")
+            total_sent += sent
         return sock
     else:
         sock.close()
@@ -489,9 +521,9 @@ def gen_pubcomp(mid, proto_ver=4, reason_code=-1, properties=None):
     return _gen_command_with_mid(112, mid, proto_ver, reason_code, properties)
 
 
-def gen_subscribe(mid, topic, qos, proto_ver=4, properties=b""):
+def gen_subscribe(mid, topic, qos, cmd=130, proto_ver=4, properties=b""):
     topic = topic.encode("utf-8")
-    packet = struct.pack("!B", 130)
+    packet = struct.pack("!B", cmd)
     if proto_ver == 5:
         if properties == b"":
             packet += pack_remaining_length(2+1+2+len(topic)+1)
@@ -514,14 +546,23 @@ def gen_suback(mid, qos, proto_ver=4):
     else:
         return struct.pack('!BBHB', 144, 2+1, mid, qos)
 
-def gen_unsubscribe(mid, topic, proto_ver=4):
+def gen_unsubscribe(mid, topic, cmd=162, proto_ver=4, properties=b""):
     topic = topic.encode("utf-8")
     if proto_ver == 5:
-        pack_format = "!BBHBH"+str(len(topic))+"s"
-        return struct.pack(pack_format, 162, 2+2+len(topic)+1, mid, 0, len(topic), topic)
+        if properties == b"":
+            pack_format = "!BBHBH"+str(len(topic))+"s"
+            return struct.pack(pack_format, cmd, 2+2+len(topic)+1, mid, 0, len(topic), topic)
+        else:
+            properties = mqtt5_props.prop_finalise(properties)
+            packet = struct.pack("!B", cmd)
+            l = 2+2+len(topic)+1+len(properties)
+            packet += pack_remaining_length(l)
+            pack_format = "!HB"+str(len(properties))+"sH"+str(len(topic))+"s"
+            packet += struct.pack(pack_format, mid, len(properties), properties, len(topic), topic)
+            return packet
     else:
         pack_format = "!BBHH"+str(len(topic))+"s"
-        return struct.pack(pack_format, 162, 2+2+len(topic), mid, len(topic), topic)
+        return struct.pack(pack_format, cmd, 2+2+len(topic), mid, len(topic), topic)
 
 def gen_unsubscribe_multiple(mid, topics, proto_ver=4):
     packet = b""

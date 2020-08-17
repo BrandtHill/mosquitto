@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2016-2019 Roger Light <roger@atchoo.org>
+Copyright (c) 2016-2020 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License v1.0
@@ -20,6 +20,7 @@ Contributors:
 #include "mosquitto_internal.h"
 #include "mosquitto_broker.h"
 #include "memory_mosq.h"
+#include "utlist.h"
 
 #ifdef WITH_TLS
 #  include <openssl/ssl.h>
@@ -65,7 +66,29 @@ void *mosquitto_client_certificate(const struct mosquitto *client)
 
 int mosquitto_client_protocol(const struct mosquitto *client)
 {
-	return client->protocol;
+#ifdef WITH_WEBSOCKETS
+	if(client->wsi){
+		return mp_websockets;
+	}else
+#endif
+	{
+		return mp_mqtt;
+	}
+}
+
+
+int mosquitto_client_protocol_version(const struct mosquitto *client)
+{
+	switch(client->protocol){
+		case mosq_p_mqtt31:
+			return 3;
+		case mosq_p_mqtt311:
+			return 4;
+		case mosq_p_mqtt5:
+			return 5;
+		default:
+			return 0;
+	}
 }
 
 
@@ -86,6 +109,48 @@ const char *mosquitto_client_username(const struct mosquitto *context)
 		return context->username;
 	}
 }
+
+
+int mosquitto_plugin_publish(
+		const char *topic,
+		int payloadlen,
+		const void *payload,
+		int qos,
+		bool retain,
+		mosquitto_property *properties)
+{
+	struct mosquitto_message_v5 *msg;
+	struct mosquitto_db *db;
+
+	msg = mosquitto__malloc(sizeof(struct mosquitto_message_v5));
+	if(msg == NULL) return MOSQ_ERR_NOMEM;
+	
+	msg->next = NULL;
+	msg->prev = NULL;
+	msg->topic = mosquitto__strdup(topic);
+	if(msg->topic == NULL){
+		mosquitto__free(msg);
+		return MOSQ_ERR_NOMEM;
+	}
+	msg->payloadlen = payloadlen;
+	msg->payload = mosquitto__calloc(1, payloadlen+1);
+	if(msg->payload == NULL){
+		mosquitto__free(msg->topic);
+		mosquitto__free(msg);
+		return MOSQ_ERR_NOMEM;
+	}
+	memcpy(msg->payload, payload, payloadlen);
+	msg->qos = qos;
+	msg->retain = retain;
+	msg->properties = properties;
+
+	db = mosquitto__get_db();
+
+	DL_APPEND(db->plugin_msgs, msg);
+
+	return MOSQ_ERR_SUCCESS;
+}
+
 
 int mosquitto_set_username(struct mosquitto *client, const char *username)
 {

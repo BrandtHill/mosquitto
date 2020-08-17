@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2009-2019 Roger Light <roger@atchoo.org>
+Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License v1.0
@@ -228,14 +228,14 @@ int connect__on_authorised(struct mosquitto_db *db, struct mosquitto *context, v
 	context->maximum_qos = context->listener->maximum_qos;
 
 	if(context->protocol == mosq_p_mqtt5){
-		if(context->maximum_qos != 2){
-			if(mosquitto_property_add_byte(&connack_props, MQTT_PROP_MAXIMUM_QOS, context->maximum_qos)){
+		if(context->listener->max_topic_alias > 0){
+			if(mosquitto_property_add_int16(&connack_props, MQTT_PROP_TOPIC_ALIAS_MAXIMUM, context->listener->max_topic_alias)){
 				rc = MOSQ_ERR_NOMEM;
 				goto error;
 			}
 		}
-		if(context->listener->max_topic_alias > 0){
-			if(mosquitto_property_add_int16(&connack_props, MQTT_PROP_TOPIC_ALIAS_MAXIMUM, context->listener->max_topic_alias)){
+		if(context->maximum_qos != 2){
+			if(mosquitto_property_add_byte(&connack_props, MQTT_PROP_MAXIMUM_QOS, context->maximum_qos)){
 				rc = MOSQ_ERR_NOMEM;
 				goto error;
 			}
@@ -272,7 +272,10 @@ int connect__on_authorised(struct mosquitto_db *db, struct mosquitto *context, v
 	mosquitto__set_state(context, mosq_cs_active);
 	rc = send__connack(db, context, connect_ack, CONNACK_ACCEPTED, connack_props);
 	mosquitto_property_free_all(&connack_props);
-	return rc;
+	rc = db__message_write_queued_out(db, context);
+	if(rc) return rc;
+	rc = db__message_write_inflight_out_all(db, context);
+	if(rc) return rc;
 error:
 	free(auth_data_out);
 	mosquitto_property_free_all(&connack_props);
@@ -636,6 +639,12 @@ int handle__connect(struct mosquitto_db *db, struct mosquitto *context)
 		goto handle_connect_error;
 	}
 
+	/* Once context->id is set, if we return from this function with an error
+	 * we must make sure that context->id is freed and set to NULL, so that the
+	 * client isn't erroneously removed from the by_id hash table. */
+	context->id = client_id;
+	client_id = NULL;
+
 #ifdef WITH_TLS
 	if(context->listener->ssl_ctx && (context->listener->use_identity_as_username || context->listener->use_subject_as_username)){
 		/* Don't need the username or password if provided */
@@ -762,49 +771,38 @@ int handle__connect(struct mosquitto_db *db, struct mosquitto *context)
 #endif /* FINAL_WITH_TLS_PSK */
 	}else{
 #endif /* WITH_TLS */
-		if(username_flag || password_flag){
-			/* FIXME - these ensure the mosquitto_client_id() and
-			 * mosquitto_client_username() functions work, but is hacky */
-			context->id = client_id;
-			context->username = username;
-			rc = mosquitto_unpwd_check(db, context, username, password);
-			context->username = NULL;
-			context->id = NULL;
-			switch(rc){
-				case MOSQ_ERR_SUCCESS:
-					break;
-				case MOSQ_ERR_AUTH:
-					if(context->protocol == mosq_p_mqtt5){
-						send__connack(db, context, 0, MQTT_RC_NOT_AUTHORIZED, NULL);
-					}else{
-						send__connack(db, context, 0, CONNACK_REFUSED_NOT_AUTHORIZED, NULL);
-					}
-					context__disconnect(db, context);
-					rc = 1;
-					goto handle_connect_error;
-					break;
-				default:
-					context__disconnect(db, context);
-					rc = 1;
-					goto handle_connect_error;
-					break;
-			}
-			context->username = username;
-			context->password = password;
-			username = NULL; /* Avoid free() in error: below. */
-			password = NULL;
-		}else{
-			if((db->config->per_listener_settings && context->listener->security_options.allow_anonymous == false)
-					|| (!db->config->per_listener_settings && db->config->security_options.allow_anonymous == false)){
+		/* FIXME - these ensure the mosquitto_client_id() and
+		 * mosquitto_client_username() functions work, but is hacky */
+		context->username = username;
+		context->password = password;
+		username = NULL; /* Avoid free() in error: below. */
+		password = NULL;
 
+		rc = mosquitto_unpwd_check(db, context);
+		if(rc != MOSQ_ERR_SUCCESS){
+			/* We must have context->id == NULL here so we don't later try and
+			 * remove the client from the by_id hash table */
+			mosquitto__free(context->id);
+			context->id = NULL;
+		}
+		switch(rc){
+			case MOSQ_ERR_SUCCESS:
+				break;
+			case MOSQ_ERR_AUTH:
 				if(context->protocol == mosq_p_mqtt5){
 					send__connack(db, context, 0, MQTT_RC_NOT_AUTHORIZED, NULL);
 				}else{
 					send__connack(db, context, 0, CONNACK_REFUSED_NOT_AUTHORIZED, NULL);
 				}
+				context__disconnect(db, context);
 				rc = 1;
 				goto handle_connect_error;
-			}
+				break;
+			default:
+				context__disconnect(db, context);
+				rc = 1;
+				goto handle_connect_error;
+				break;
 		}
 #ifdef WITH_TLS
 	}
@@ -812,9 +810,9 @@ int handle__connect(struct mosquitto_db *db, struct mosquitto *context)
 
 	if(context->listener->use_username_as_clientid){
 		if(context->username){
-			mosquitto__free(client_id);
-			client_id = mosquitto__strdup(context->username);
-			if(!client_id){
+			mosquitto__free(context->id);
+			context->id = mosquitto__strdup(context->username);
+			if(!context->id){
 				rc = MOSQ_ERR_NOMEM;
 				goto handle_connect_error;
 			}
@@ -829,7 +827,6 @@ int handle__connect(struct mosquitto_db *db, struct mosquitto *context)
 		}
 	}
 	context->clean_start = clean_start;
-	context->id = client_id;
 	context->will = will_struct;
 
 	if(context->auth_method){
@@ -882,5 +879,7 @@ handle_connect_error:
 	if(client_cert) X509_free(client_cert);
 #endif
 	/* We return an error here which means the client is freed later on. */
+	context->clean_start = true;
+	context->session_expiry_interval = 0;
 	return rc;
 }

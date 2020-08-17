@@ -100,6 +100,7 @@ tests = [
     (2, './06-bridge-br2b-disconnect-qos1.py'),
     (2, './06-bridge-br2b-disconnect-qos2.py'),
     (2, './06-bridge-br2b-remapping.py'),
+    (2, './06-bridge-clean-session.py'),
     (2, './06-bridge-fail-persist-resend-qos1.py'),
     (2, './06-bridge-fail-persist-resend-qos2.py'),
     (1, './06-bridge-no-local.py'),
@@ -180,6 +181,10 @@ tests = [
     (1, './12-prop-subpub-content-type.py'),
     (1, './12-prop-subpub-payload-format.py'),
     (1, './12-prop-topic-alias-invalid.py'),
+
+    (1, './13-malformed-publish-v5.py'),
+    (1, './13-malformed-subscribe-v5.py'),
+    (1, './13-malformed-unsubscribe-v5.py'),
     ]
 
 ptest.run_tests(tests)

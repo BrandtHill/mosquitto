@@ -1,15 +1,15 @@
 /*
-Copyright (c) 2010-2018 Roger Light <roger@atchoo.org>
+Copyright (c) 2010-2020 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License v1.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    http://www.eclipse.org/legal/epl-v10.html
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -34,6 +34,7 @@ Contributors:
 #include "memory_mosq.h"
 #include "persist.h"
 #include "time_mosq.h"
+#include "misc_mosq.h"
 #include "util_mosq.h"
 
 uint32_t db_version;
@@ -120,6 +121,12 @@ static int persist__client_msg_restore(struct mosquitto_db *db, struct P_client_
 		return MOSQ_ERR_SUCCESS;
 	}
 
+	context = persist__find_or_add_context(db, chunk->client_id, 0);
+	if(!context){
+		log__printf(NULL, MOSQ_LOG_WARNING, "Warning: Persistence file contains client message with no matching client. File may be corrupt.");
+		return 0;
+	}
+
 	cmsg = mosquitto__calloc(1, sizeof(struct mosquitto_client_msg));
 	if(!cmsg){
 		log__printf(NULL, MOSQ_LOG_ERR, "Error: Out of memory.");
@@ -139,13 +146,6 @@ static int persist__client_msg_restore(struct mosquitto_db *db, struct P_client_
 
 	cmsg->store = load->store;
 	db__msg_store_ref_inc(cmsg->store);
-
-	context = persist__find_or_add_context(db, chunk->client_id, 0);
-	if(!context){
-		mosquitto__free(cmsg);
-		log__printf(NULL, MOSQ_LOG_ERR, "Error restoring persistent database, message store corrupt.");
-		return 1;
-	}
 
 	if(cmsg->direction == mosq_md_out){
 		msg_data = &context->msgs_out;
@@ -185,9 +185,13 @@ static int persist__client_chunk_restore(struct mosquitto_db *db, FILE *db_fptr)
 	}else{
 		rc = persist__chunk_client_read_v234(db_fptr, &chunk, db_version);
 	}
-	if(rc){
+	if(rc > 0){
 		fclose(db_fptr);
 		return rc;
+	}else if(rc < 0){
+		/* Client not loaded, but otherwise not an error */
+		log__printf(NULL, MOSQ_LOG_WARNING, "Warning: Empty client entry found in persistence database, it may be corrupt.");
+		return MOSQ_ERR_SUCCESS;
 	}
 
 	context = persist__find_or_add_context(db, chunk.client_id, chunk.F.last_mid);
@@ -287,10 +291,27 @@ static int persist__msg_store_chunk_restore(struct mosquitto_db *db, FILE *db_fp
 		message_expiry_interval = 0;
 	}
 
-	rc = db__message_store(db, &chunk.source, chunk.F.source_mid,
-			chunk.topic, chunk.F.qos, chunk.F.payloadlen,
-			&chunk.payload, chunk.F.retain, &stored, message_expiry_interval,
-			chunk.properties, chunk.F.store_id, mosq_mo_client);
+	stored = mosquitto__calloc(1, sizeof(struct mosquitto_msg_store));
+	if(stored == NULL){
+		fclose(db_fptr);
+		mosquitto__free(chunk.source.id);
+		mosquitto__free(chunk.source.username);
+		mosquitto__free(chunk.topic);
+		UHPA_FREE(chunk.payload, chunk.F.payloadlen);
+		log__printf(NULL, MOSQ_LOG_ERR, "Error: Out of memory.");
+		return MOSQ_ERR_NOMEM;
+	}
+
+	stored->source_mid = chunk.F.source_mid;
+	stored->topic = chunk.topic;
+	stored->qos = chunk.F.qos;
+	stored->payloadlen = chunk.F.payloadlen;
+	stored->retain = chunk.F.retain;
+	stored->properties = chunk.properties;
+	UHPA_MOVE(stored->payload, chunk.payload, stored->payloadlen);
+
+	rc = db__message_store(db, &chunk.source, stored, message_expiry_interval,
+			chunk.F.store_id, mosq_mo_client);
 
 	mosquitto__free(chunk.source.id);
 	mosquitto__free(chunk.source.username);
@@ -437,10 +458,12 @@ int persist__restore(struct mosquitto_db *db)
 				case DB_CHUNK_CFG:
 					if(db_version == 5){
 						if(persist__chunk_cfg_read_v5(fptr, &cfg_chunk)){
+							fclose(fptr);
 							return 1;
 						}
 					}else{
 						if(persist__chunk_cfg_read_v234(fptr, &cfg_chunk)){
+							fclose(fptr);
 							return 1;
 						}
 					}

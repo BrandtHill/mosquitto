@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2009-2019 Roger Light <roger@atchoo.org>
+Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License v1.0
@@ -41,6 +41,18 @@ int handle__connack(struct mosquitto_db *db, struct mosquitto *context)
 	if(packet__read_byte(&context->in_packet, &reason_code)) return 1;
 
 	if(context->protocol == mosq_p_mqtt5){
+		if(context->in_packet.remaining_length == 2 && reason_code == CONNACK_REFUSED_PROTOCOL_VERSION){
+			/* We have connected to a MQTT v3.x broker that doesn't support MQTT v5.0
+			 * It has correctly replied with a CONNACK code of a bad protocol version.
+			 */
+			log__printf(NULL, MOSQ_LOG_NOTICE,
+					"Warning: Remote bridge %s does not support MQTT v5.0, reconnecting using MQTT v3.1.1.",
+					context->bridge->name);
+
+			context->protocol = mosq_p_mqtt311;
+			context->bridge->protocol_version = mosq_p_mqtt311;
+			return MOSQ_ERR_PROTOCOL;
+		}
 		rc = property__read_all(CMD_CONNACK, &context->in_packet, &properties);
 		if(rc) return rc;
 		mosquitto_property_free_all(&properties);
@@ -55,7 +67,10 @@ int handle__connack(struct mosquitto_db *db, struct mosquitto *context)
 		}
 #endif
 		mosquitto__set_state(context, mosq_cs_active);
-		return MOSQ_ERR_SUCCESS;
+		rc = db__message_write_queued_out(db, context);
+		if(rc) return rc;
+		rc = db__message_write_inflight_out_all(db, context);
+		return rc;
 	}else{
 		if(context->protocol == mosq_p_mqtt5){
 			switch(reason_code){

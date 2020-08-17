@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2009-2019 Roger Light <roger@atchoo.org>
+Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License v1.0
@@ -49,6 +49,8 @@ void my_signal_handler(int signum)
 	if(signum == SIGALRM || signum == SIGTERM || signum == SIGINT){
 		process_messages = false;
 		mosquitto_disconnect_v5(mosq, MQTT_RC_DISCONNECT_WITH_WILL_MSG, cfg.disconnect_props);
+	}
+	if(signum == SIGALRM){
 		timed_out = true;
 	}
 }
@@ -77,10 +79,6 @@ void my_message_callback(struct mosquitto *mosq, void *obj, const struct mosquit
 
 	if(process_messages == false) return;
 
-	if(cfg.remove_retained && message->retain){
-		mosquitto_publish(mosq, &last_mid, message->topic, 0, NULL, 1, true);
-	}
-
 	if(cfg.retained_only && !message->retain && process_messages){
 		process_messages = false;
 		if(last_mid == 0){
@@ -95,6 +93,10 @@ void my_message_callback(struct mosquitto *mosq, void *obj, const struct mosquit
 			mosquitto_topic_matches_sub(cfg.filter_outs[i], message->topic, &res);
 			if(res) return;
 		}
+	}
+
+	if(cfg.remove_retained && message->retain){
+		mosquitto_publish(mosq, &last_mid, message->topic, 0, NULL, 1, true);
 	}
 
 	print_message(&cfg, message, properties);
@@ -256,6 +258,9 @@ void print_usage(void)
 	printf(" --pretty : print formatted output rather than minimised output when using the\n");
 	printf("            JSON output format option.\n");
 	printf(" --quiet : don't print error messages.\n");
+	printf(" --random-filter : only print a percentage of received messages. Set to 100 to have all\n");
+	printf("                   messages printed, 50.0 to have half of the messages received on average\n");
+	printf("                   printed, and so on.\n");
 	printf(" --retained-only : only handle messages with the retained flag set, and exit when the\n");
 	printf("                   first non-retained message is received.\n");
 	printf(" --remove-retained : send a message to the server to clear any received retained messages\n");
@@ -306,6 +311,8 @@ int main(int argc, char *argv[])
 #endif
 
 	mosquitto_lib_init();
+
+	rand_init();
 
 	rc = client_config_load(&cfg, CLIENT_SUB, argc, argv);
 	if(rc){

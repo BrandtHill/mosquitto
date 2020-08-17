@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2010-2018 Roger Light <roger@atchoo.org>
+Copyright (c) 2010-2020 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License v1.0
@@ -33,6 +33,7 @@ Contributors:
 #include "memory_mosq.h"
 #include "persist.h"
 #include "time_mosq.h"
+#include "misc_mosq.h"
 #include "util_mosq.h"
 
 static int persist__client_messages_save(struct mosquitto_db *db, FILE *db_fptr, struct mosquitto *context, struct mosquitto_client_msg *queue)
@@ -174,6 +175,12 @@ static int persist__client_save(struct mosquitto_db *db, FILE *db_fptr)
 			chunk.F.id_len = strlen(context->id);
 			chunk.client_id = context->id;
 
+			if(chunk.F.id_len == 0){
+				/* This should never happen, but in case we have a client with
+				 * zero length ID, don't persist them. */
+				continue;
+			}
+
 			rc = persist__chunk_client_write_v5(db_fptr, &chunk);
 			if(rc){
 				return rc;
@@ -297,8 +304,9 @@ int persist__backup(struct mosquitto_db *db, bool shutdown)
 	int len;
 	struct PF_cfg cfg_chunk;
 
-	if(!db || !db->config || !db->config->persistence_filepath) return MOSQ_ERR_INVAL;
+	if(db == NULL || db->config == NULL) return MOSQ_ERR_INVAL;
 	if(db->config->persistence == false) return MOSQ_ERR_SUCCESS;
+	if(db->config->persistence_filepath == NULL) return MOSQ_ERR_INVAL;
 
 	log__printf(NULL, MOSQ_LOG_INFO, "Saving in-memory database to %s.", db->config->persistence_filepath);
 
